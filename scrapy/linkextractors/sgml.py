@@ -1,12 +1,11 @@
 """
 SGMLParser-based Link extractors
 """
-import six
-from six.moves.urllib.parse import urljoin
 import warnings
+from urllib.parse import urljoin
 from sgmllib import SGMLParser
 
-from w3lib.url import safe_url_string
+from w3lib.url import safe_url_string, canonicalize_url
 from w3lib.html import strip_html5_whitespace
 
 from scrapy.link import Link
@@ -20,7 +19,7 @@ from scrapy.exceptions import ScrapyDeprecationWarning
 class BaseSgmlLinkExtractor(SGMLParser):
 
     def __init__(self, tag="a", attr="href", unique=False, process_value=None,
-                 strip=True):
+                 strip=True, canonicalized=False):
         warnings.warn(
             "BaseSgmlLinkExtractor is deprecated and will be removed in future releases. "
             "Please use scrapy.linkextractors.LinkExtractor",
@@ -33,6 +32,11 @@ class BaseSgmlLinkExtractor(SGMLParser):
         self.current_link = None
         self.unique = unique
         self.strip = strip
+        if canonicalized:
+            self.link_key = lambda link: link.url
+        else:
+            self.link_key = lambda link: canonicalize_url(link.url,
+                                                          keep_fragments=True)
 
     def _extract_links(self, response_text, response_url, response_encoding, base_url=None):
         """ Do the real extraction work """
@@ -44,7 +48,7 @@ class BaseSgmlLinkExtractor(SGMLParser):
         if base_url is None:
             base_url = urljoin(response_url, self.base_url) if self.base_url else response_url
         for link in self.links:
-            if isinstance(link.url, six.text_type):
+            if isinstance(link.url, str):
                 link.url = link.url.encode(response_encoding)
             try:
                 link.url = urljoin(base_url, link.url)
@@ -61,8 +65,7 @@ class BaseSgmlLinkExtractor(SGMLParser):
 
         The subclass should override it if necessary
         """
-        links = unique_list(links, key=lambda link: link.url) if self.unique else links
-        return links
+        return unique_list(links, key=self.link_key) if self.unique else links
 
     def extract_links(self, response):
         # wrapper needed to allow to work directly with text
@@ -107,10 +110,9 @@ class BaseSgmlLinkExtractor(SGMLParser):
 class SgmlLinkExtractor(FilteringLinkExtractor):
 
     def __init__(self, allow=(), deny=(), allow_domains=(), deny_domains=(), restrict_xpaths=(),
-                 tags=('a', 'area'), attrs=('href',), canonicalize=True, unique=True,
+                 tags=('a', 'area'), attrs=('href',), canonicalize=False, unique=True,
                  process_value=None, deny_extensions=None, restrict_css=(),
-                 strip=True):
-
+                 strip=True, restrict_text=()):
         warnings.warn(
             "SgmlLinkExtractor is deprecated and will be removed in future releases. "
             "Please use scrapy.linkextractors.LinkExtractor",
@@ -124,12 +126,14 @@ class SgmlLinkExtractor(FilteringLinkExtractor):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', ScrapyDeprecationWarning)
             lx = BaseSgmlLinkExtractor(tag=tag_func, attr=attr_func,
-                unique=unique, process_value=process_value, strip=strip)
+                                       unique=unique, process_value=process_value, strip=strip,
+                                       canonicalized=canonicalize)
 
         super(SgmlLinkExtractor, self).__init__(lx, allow=allow, deny=deny,
-            allow_domains=allow_domains, deny_domains=deny_domains,
-            restrict_xpaths=restrict_xpaths, restrict_css=restrict_css,
-            canonicalize=canonicalize, deny_extensions=deny_extensions)
+                                                allow_domains=allow_domains, deny_domains=deny_domains,
+                                                restrict_xpaths=restrict_xpaths, restrict_css=restrict_css,
+                                                canonicalize=canonicalize, deny_extensions=deny_extensions,
+                                                restrict_text=restrict_text)
 
     def extract_links(self, response):
         base_url = None
@@ -137,7 +141,7 @@ class SgmlLinkExtractor(FilteringLinkExtractor):
             base_url = get_base_url(response)
             body = u''.join(f
                             for x in self.restrict_xpaths
-                            for f in response.xpath(x).extract()
+                            for f in response.xpath(x).getall()
                             ).encode(response.encoding, errors='xmlcharrefreplace')
         else:
             body = response.body

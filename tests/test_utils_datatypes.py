@@ -1,19 +1,69 @@
 import copy
 import unittest
+from collections.abc import Mapping, MutableMapping
 
-from scrapy.utils.datatypes import CaselessDict, SequenceExclude
+from scrapy.http import Request
+from scrapy.utils.datatypes import CaselessDict, LocalCache, LocalWeakReferencedCache, SequenceExclude
+from scrapy.utils.python import garbage_collect
+
 
 __doctests__ = ['scrapy.utils.datatypes']
 
+
 class CaselessDictTest(unittest.TestCase):
 
-    def test_init(self):
+    def test_init_dict(self):
         seq = {'red': 1, 'black': 3}
         d = CaselessDict(seq)
         self.assertEqual(d['red'], 1)
         self.assertEqual(d['black'], 3)
 
+    def test_init_pair_sequence(self):
         seq = (('red', 1), ('black', 3))
+        d = CaselessDict(seq)
+        self.assertEqual(d['red'], 1)
+        self.assertEqual(d['black'], 3)
+
+    def test_init_mapping(self):
+        class MyMapping(Mapping):
+            def __init__(self, **kwargs):
+                self._d = kwargs
+
+            def __getitem__(self, key):
+                return self._d[key]
+
+            def __iter__(self):
+                return iter(self._d)
+
+            def __len__(self):
+                return len(self._d)
+
+        seq = MyMapping(red=1, black=3)
+        d = CaselessDict(seq)
+        self.assertEqual(d['red'], 1)
+        self.assertEqual(d['black'], 3)
+
+    def test_init_mutable_mapping(self):
+        class MyMutableMapping(MutableMapping):
+            def __init__(self, **kwargs):
+                self._d = kwargs
+
+            def __getitem__(self, key):
+                return self._d[key]
+
+            def __setitem__(self, key, value):
+                self._d[key] = value
+
+            def __delitem__(self, key):
+                del self._d[key]
+
+            def __iter__(self):
+                return iter(self._d)
+
+            def __len__(self):
+                return len(self._d)
+
+        seq = MyMutableMapping(red=1, black=3)
         d = CaselessDict(seq)
         self.assertEqual(d['red'], 1)
         self.assertEqual(d['black'], 3)
@@ -144,34 +194,26 @@ class SequenceExcludeTest(unittest.TestCase):
         self.assertIn(20, d)
         self.assertNotIn(15, d)
 
-    def test_six_range(self):
-        import six.moves
-        seq = six.moves.range(10**3, 10**6)
-        d = SequenceExclude(seq)
-        self.assertIn(10**2, d)
-        self.assertIn(10**7, d)
-        self.assertNotIn(10**4, d)
-
     def test_range_step(self):
         seq = range(10, 20, 3)
         d = SequenceExclude(seq)
         are_not_in = [v for v in range(10, 20, 3) if v in d]
-        self.assertEquals([], are_not_in)
+        self.assertEqual([], are_not_in)
 
         are_not_in = [v for v in range(10, 20) if v in d]
-        self.assertEquals([11, 12, 14, 15, 17, 18], are_not_in)
+        self.assertEqual([11, 12, 14, 15, 17, 18], are_not_in)
 
     def test_string_seq(self):
         seq = "cde"
         d = SequenceExclude(seq)
         chars = "".join(v for v in "abcdefg" if v in d)
-        self.assertEquals("abfg", chars)
+        self.assertEqual("abfg", chars)
 
     def test_stringset_seq(self):
         seq = set("cde")
         d = SequenceExclude(seq)
         chars = "".join(v for v in "abcdefg" if v in d)
-        self.assertEquals("abfg", chars)
+        self.assertEqual("abfg", chars)
 
     def test_set(self):
         """Anything that is not in the supplied sequence will evaluate as 'in' the container."""
@@ -189,6 +231,93 @@ class SequenceExcludeTest(unittest.TestCase):
         for v in [-3, "test", 1.1]:
             self.assertNotIn(v, d)
 
+
+class LocalCacheTest(unittest.TestCase):
+
+    def test_cache_with_limit(self):
+        cache = LocalCache(limit=2)
+        cache['a'] = 1
+        cache['b'] = 2
+        cache['c'] = 3
+        self.assertEqual(len(cache), 2)
+        self.assertNotIn('a', cache)
+        self.assertIn('b', cache)
+        self.assertIn('c', cache)
+        self.assertEqual(cache['b'], 2)
+        self.assertEqual(cache['c'], 3)
+
+    def test_cache_without_limit(self):
+        maximum = 10**4
+        cache = LocalCache()
+        for x in range(maximum):
+            cache[str(x)] = x
+        self.assertEqual(len(cache), maximum)
+        for x in range(maximum):
+            self.assertIn(str(x), cache)
+            self.assertEqual(cache[str(x)], x)
+
+
+class LocalWeakReferencedCacheTest(unittest.TestCase):
+
+    def test_cache_with_limit(self):
+        cache = LocalWeakReferencedCache(limit=2)
+        r1 = Request('https://example.org')
+        r2 = Request('https://example.com')
+        r3 = Request('https://example.net')
+        cache[r1] = 1
+        cache[r2] = 2
+        cache[r3] = 3
+        self.assertEqual(len(cache), 2)
+        self.assertNotIn(r1, cache)
+        self.assertIn(r2, cache)
+        self.assertIn(r3, cache)
+        self.assertEqual(cache[r2], 2)
+        self.assertEqual(cache[r3], 3)
+        del r2
+
+        # PyPy takes longer to collect dead references
+        garbage_collect()
+
+        self.assertEqual(len(cache), 1)
+
+    def test_cache_non_weak_referenceable_objects(self):
+        cache = LocalWeakReferencedCache()
+        k1 = None
+        k2 = 1
+        k3 = [1, 2, 3]
+        cache[k1] = 1
+        cache[k2] = 2
+        cache[k3] = 3
+        self.assertNotIn(k1, cache)
+        self.assertNotIn(k2, cache)
+        self.assertNotIn(k3, cache)
+        self.assertEqual(len(cache), 0)
+
+    def test_cache_without_limit(self):
+        max = 10**4
+        cache = LocalWeakReferencedCache()
+        refs = []
+        for x in range(max):
+            refs.append(Request('https://example.org/{}'.format(x)))
+            cache[refs[-1]] = x
+        self.assertEqual(len(cache), max)
+        for i, r in enumerate(refs):
+            self.assertIn(r, cache)
+            self.assertEqual(cache[r], i)
+        del r  # delete reference to the last object in the list
+
+        # delete half of the objects, make sure that is reflected in the cache
+        for _ in range(max // 2):
+            refs.pop()
+
+        # PyPy takes longer to collect dead references
+        garbage_collect()
+
+        self.assertEqual(len(cache), max // 2)
+        for i, r in enumerate(refs):
+            self.assertIn(r, cache)
+            self.assertEqual(cache[r], i)
+
+
 if __name__ == "__main__":
     unittest.main()
-

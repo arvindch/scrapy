@@ -1,6 +1,6 @@
 import zlib
 
-from scrapy.utils.gz import gunzip, is_gzipped
+from scrapy.utils.gz import gunzip
 from scrapy.http import Response, TextResponse
 from scrapy.responsetypes import responsetypes
 from scrapy.exceptions import NotConfigured
@@ -15,7 +15,7 @@ except ImportError:
     pass
 
 
-class HttpCompressionMiddleware(object):
+class HttpCompressionMiddleware:
     """This middleware allows compressed (gzip, deflate) traffic to be
     sent/received from web sites"""
     @classmethod
@@ -26,7 +26,7 @@ class HttpCompressionMiddleware(object):
 
     def process_request(self, request, spider):
         request.headers.setdefault('Accept-Encoding',
-                                   b",".join(ACCEPTED_ENCODINGS))
+                                   b", ".join(ACCEPTED_ENCODINGS))
 
     def process_response(self, request, response, spider):
 
@@ -34,11 +34,12 @@ class HttpCompressionMiddleware(object):
             return response
         if isinstance(response, Response):
             content_encoding = response.headers.getlist('Content-Encoding')
-            if content_encoding and not is_gzipped(response):
+            if content_encoding:
                 encoding = content_encoding.pop()
                 decoded_body = self._decode(response.body, encoding.lower())
-                respcls = responsetypes.from_args(headers=response.headers, \
-                    url=response.url)
+                respcls = responsetypes.from_args(
+                    headers=response.headers, url=response.url, body=decoded_body
+                )
                 kwargs = dict(cls=respcls, body=decoded_body)
                 if issubclass(respcls, TextResponse):
                     # force recalculating the encoding until we make sure the
